@@ -2,15 +2,23 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\StoreBookingRequest;
 use App\Models\Booking;
 use App\Models\Room;
-use Carbon\Carbon;
+use App\Services\BookingService;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Http\Response;
+use Illuminate\Validation\ValidationException;
 
 class BookingController extends Controller
 {
+    /**
+     * @param  BookingService  $bookingService  Сервис бронирования
+     * @return void
+     */
+    public function __construct(private BookingService $bookingService) {}
+
     public function index(Request $request)
     {
         return Booking::where('user_id', $request->user()->id)
@@ -18,33 +26,34 @@ class BookingController extends Controller
             ->paginate(20);
     }
 
-    public function store(Request $request)
+    /**
+     * Создать бронь от имени аутентифицированного пользователя.
+     *
+     * @param  StoreBookingRequest  $request  Валидированный запрос на создание
+     * @return Booking
+     *
+     * @throws ValidationException
+     */
+    public function store(StoreBookingRequest $request): Booking
     {
-        $conflict = DB::select("SELECT id FROM bookings
-            WHERE room_id = {$request->room_id}
-            AND starts_at <= '{$request->ends_at}'
-            AND ends_at >= '{$request->starts_at}'");
-
-        if ($conflict) {
-            return response()->json(['error' => 'Комната занята'], 409);
-        }
-
-        $start = Carbon::parse($request->starts_at);
-        if ($start->hour < 9 || $start->hour >= 20) {
-            return response()->json(['error' => 'Нерабочее время'], 422);
-        }
-
-        $booking = Booking::create($request->all());
-
-        Log::withContext(['booking_id' => $booking->id]);
-        Log::channel('bookings')->info('Booking created');
-
-        return $booking;
+        return $this->bookingService->create(
+            $request->user(),
+            $request->validated(),
+        );
     }
 
-    public function destroy($id)
+    /**
+     * Отменить бронь. Доступно только автору.
+     *
+     * @param  Request  $request  HTTP-запрос
+     * @param  Booking  $booking  Отменяемая бронь
+     * @return Response
+     *
+     * @throws AuthorizationException
+     */
+    public function destroy(Request $request, Booking $booking): Response
     {
-        Booking::findOrFail($id)->delete();
+        $this->bookingService->cancel($request->user(), $booking);
 
         return response()->noContent();
     }
@@ -55,7 +64,7 @@ class BookingController extends Controller
             ->whereDate('starts_at', today())
             ->get()
             ->map(fn ($b) => [
-                'time' => $b->starts_at . ' – ' . $b->ends_at,
+                'time' => $b->starts_at.' – '.$b->ends_at,
                 'author' => $b->user->name,
             ]);
     }
